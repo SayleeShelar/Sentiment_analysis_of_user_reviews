@@ -61,6 +61,9 @@ sentiment analysis of user review/
 ├── run.bat                       ← One-click Windows launcher
 ├── README.md                     ← This file
 │
+├── notebooks/
+│   └── sentiment_analysis.ipynb  ← Interactive Jupyter notebook (all steps)
+│
 ├── data/
 │   ├── reviews_raw.csv           ← Raw IMDb dataset (50,000 reviews)
 │   └── reviews_clean.csv         ← Cleaned + processed dataset
@@ -127,6 +130,16 @@ streamlit run app.py
 Then open **http://localhost:8501** in your browser.
 
 > **Note:** After running `train_pipeline.py` once, the model is saved to the `model/` folder. You never need to retrain — just run `streamlit run app.py` directly next time.
+
+### Option C — Jupyter Notebook (Interactive exploration)
+
+```bash
+jupyter notebook notebooks/sentiment_analysis.ipynb
+```
+
+The notebook walks through every step interactively with inline charts and outputs.
+
+> **Important:** Run all cells **except the last one (Step 8 — Save Model)** if the model is already trained. The last cell overwrites the saved model files — safe to skip.
 
 ---
 
@@ -582,6 +595,12 @@ streamlit run app.py --server.port 8502
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+**IProgress / ipywidgets error in Jupyter notebook**
+If you see `ImportError: IProgress not found` while running the notebook, it means the notebook was using `tqdm.notebook`. This has been fixed to use plain `tqdm`. If you still see it, restart the kernel and re-run all cells.
+
+**Notebook asks "file changed on disk — revert or overwrite?"**
+Always click **Revert** to load the latest version from disk.
 
 ---
 
