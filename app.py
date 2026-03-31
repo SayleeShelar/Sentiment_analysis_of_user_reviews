@@ -132,6 +132,7 @@ with st.sidebar:
     - 📈 Visualisations
     - 🤖 Model & Metrics
     - 🔮 Live Prediction
+    - 📂 CSV Analyser
     """)
     st.divider()
     if model_ready():
@@ -145,7 +146,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 tabs = st.tabs(["📊 Data Overview", "🧹 Data Cleaning",
-                "📈 Visualisations", "🤖 Model & Metrics", "🔮 Live Prediction"])
+                "📈 Visualisations", "🤖 Model & Metrics", "🔮 Live Prediction", "📂 CSV Analyser"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 – DATA OVERVIEW
@@ -428,6 +429,356 @@ with tabs[4]:
             fig.update_layout(showlegend=False, height=300,
                               margin=dict(t=40, b=10, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 – CSV ANALYSER
+# ══════════════════════════════════════════════════════════════════════════════
+with tabs[5]:
+    st.markdown('<p class="section-title"><span class="step-badge">6</span>CSV Bulk Analyser</p>',
+                unsafe_allow_html=True)
+
+    st.markdown("""
+    Upload any CSV file that contains a column of reviews or feedback text.
+    The model will automatically analyse every row and give you a full sentiment dashboard.
+    """)
+
+    if not model_ready():
+        st.error("Model not found. Run `python train_pipeline.py` first.")
+    else:
+        vec, clf, meta = load_model()
+        stop, lem = get_nlp()
+        pos_idx = list(clf.classes_).index("positive")
+
+        uploaded = st.file_uploader("Upload your CSV file", type=["csv"])
+
+        if uploaded:
+            try:
+                try:
+                    udf = pd.read_csv(uploaded)
+                except UnicodeDecodeError:
+                    uploaded.seek(0)
+                    udf = pd.read_csv(uploaded, encoding="latin-1")
+                st.success(f"File loaded: {len(udf):,} rows, {len(udf.columns)} columns")
+
+                # let user pick the text column
+                text_col = st.selectbox(
+                    "Select the column that contains the review/feedback text:",
+                    options=udf.columns.tolist()
+                )
+
+                if st.button("Analyse CSV"):
+                    reviews = udf[text_col].astype(str).tolist()
+
+                    with st.spinner(f"Analysing {len(reviews):,} reviews..."):
+                        cleaned  = [clean_text(r, stop, lem) for r in reviews]
+                        vecs     = vec.transform(cleaned)
+                        preds    = clf.predict(vecs)
+                        probas   = clf.predict_proba(vecs)
+
+                    udf["Sentiment"]  = preds
+                    udf["Confidence"] = [f"{max(p):.1%}" for p in probas]
+                    udf["Pos Prob"]   = [f"{probas[i][pos_idx]:.1%}" for i in range(len(probas))]
+
+                    # ── summary metrics ────────────────────────────────────────
+                    total    = len(preds)
+                    n_pos    = (preds == "positive").sum()
+                    n_neg    = (preds == "negative").sum()
+                    avg_conf = float(pd.Series([max(p) for p in probas]).mean())
+
+                    st.markdown("### Dashboard")
+                    c1, c2, c3, c4 = st.columns(4)
+                    for col, val, lbl in [
+                        (c1, f"{total:,}",        "Total Reviews"),
+                        (c2, f"{n_pos:,}",         "Positive"),
+                        (c3, f"{n_neg:,}",         "Negative"),
+                        (c4, f"{avg_conf:.1%}",    "Avg Confidence"),
+                    ]:
+                        col.markdown(f'<div class="metric-card"><div class="val">{val}</div>'
+                                     f'<div class="lbl">{lbl}</div></div>',
+                                     unsafe_allow_html=True)
+
+                    st.markdown("")
+
+                    # ── pie + bar side by side ─────────────────────────────────
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        fig_pie = px.pie(
+                            values=[n_pos, n_neg],
+                            names=["Positive", "Negative"],
+                            color_discrete_sequence=["#2ecc71", "#e74c3c"],
+                            title="Sentiment Split"
+                        )
+                        fig_pie.update_layout(height=320, margin=dict(t=40,b=10,l=10,r=10))
+                        st.plotly_chart(fig_pie, use_container_width=True)
+
+                    with col2:
+                        conf_df = pd.DataFrame({
+                            "Sentiment": preds,
+                            "Confidence": [max(p) for p in probas]
+                        })
+                        fig_box = px.box(
+                            conf_df, x="Sentiment", y="Confidence",
+                            color="Sentiment",
+                            color_discrete_map={"positive": "#2ecc71", "negative": "#e74c3c"},
+                            title="Confidence Distribution"
+                        )
+                        fig_box.update_layout(height=320, showlegend=False,
+                                              margin=dict(t=40,b=10,l=10,r=10))
+                        st.plotly_chart(fig_box, use_container_width=True)
+
+                    # ── top negative words ─────────────────────────────────────
+                    neg_reviews = [cleaned[i] for i in range(len(preds)) if preds[i] == "negative"]
+                    top_neg_words = []
+                    if neg_reviews:
+                        st.markdown("#### Top Words in Negative Reviews")
+                        from sklearn.feature_extraction.text import CountVectorizer as CV
+                        GENERIC = {
+                            "movie", "film", "like", "good", "really", "just", "make",
+                            "people", "thing", "way", "time", "even", "one", "get",
+                            "see", "watch", "would", "could", "much", "also", "well",
+                            "scene", "story", "character", "plot", "show", "made",
+                            "think", "know", "say", "going", "come", "look", "want"
+                        }
+                        cv = CV(max_features=50, stop_words="english")
+                        cv.fit(neg_reviews)
+                        freq = dict(zip(
+                            cv.get_feature_names_out(),
+                            cv.transform(neg_reviews).toarray().sum(axis=0)
+                        ))
+                        freq = {k: v for k, v in freq.items() if k not in GENERIC}
+                        freq_s = pd.Series(freq).nlargest(15).sort_values(ascending=True)
+                        top_neg_words = freq_s.index.tolist()
+                        fig_words = px.bar(
+                            x=freq_s.values, y=freq_s.index,
+                            orientation="h",
+                            color_discrete_sequence=["#e74c3c"],
+                            labels={"x": "Frequency", "y": "Word"},
+                            title="Most Frequent Words in Negative Reviews"
+                        )
+                        fig_words.update_layout(height=380, margin=dict(t=40,b=10,l=10,r=10))
+                        st.plotly_chart(fig_words, use_container_width=True)
+
+                    # ── recommendations ─────────────────────────────────────
+                    st.markdown("#### 💡 Recommendations")
+
+                    RULES = [
+                        (
+                            ["slow", "delay", "late", "wait", "waiting", "delayed", "long", "time"],
+                            "Speed / Delivery",
+                            "Customers are complaining about **slow speed or delays**. Consider improving response time, delivery speed, or processing time."
+                        ),
+                        (
+                            ["rude", "staff", "behaviour", "behavior", "unprofessional", "impolite", "arrogant", "attitude"],
+                            "Customer Service",
+                            "Complaints about **staff behaviour or rudeness** detected. Staff training and customer service improvement is recommended."
+                        ),
+                        (
+                            ["quality", "bad", "broken", "cheap", "defective", "poor", "damage", "damaged", "worst", "terrible"],
+                            "Product / Service Quality",
+                            "Customers are unhappy with **quality**. Review your product or service standards and consider quality checks."
+                        ),
+                        (
+                            ["price", "expensive", "costly", "overpriced", "worth", "money", "cheap", "cost"],
+                            "Pricing",
+                            "Pricing concerns are appearing in negative reviews. Consider reviewing your **pricing strategy** or offering better value."
+                        ),
+                        (
+                            ["dirty", "smell", "clean", "hygiene", "unhygienic", "filthy", "stink"],
+                            "Hygiene / Cleanliness",
+                            "Customers are mentioning **hygiene or cleanliness** issues. Immediate attention to cleanliness standards is advised."
+                        ),
+                        (
+                            ["wrong", "incorrect", "mistake", "error", "missing", "incomplete", "inaccurate"],
+                            "Accuracy / Order Issues",
+                            "Customers are reporting **wrong or missing items/information**. Review your order fulfilment or accuracy processes."
+                        ),
+                        (
+                            ["return", "refund", "exchange", "replace", "replacement", "warranty"],
+                            "Returns & Refunds",
+                            "Multiple mentions of **returns or refunds** in negative reviews. Simplify your return/refund policy to improve trust."
+                        ),
+                        (
+                            ["fake", "fraud", "scam", "cheat", "lie", "mislead", "false"],
+                            "Trust & Authenticity",
+                            "Serious complaints about **fraud or misleading information** detected. Urgently review authenticity and transparency."
+                        ),
+                    ]
+
+                    RULES = [
+                        (
+                            ["slow", "delay", "late", "wait", "waiting", "delayed", "long", "time"],
+                            "Speed / Delivery",
+                            "Customers are complaining about **slow speed or delays**. Consider improving response time, delivery speed, or processing time."
+                        ),
+                        (
+                            ["rude", "staff", "behaviour", "behavior", "unprofessional", "impolite", "arrogant", "attitude"],
+                            "Customer Service",
+                            "Complaints about **staff behaviour or rudeness** detected. Staff training and customer service improvement is recommended."
+                        ),
+                        (
+                            ["quality", "bad", "broken", "cheap", "defective", "poor", "damage", "damaged", "worst", "terrible"],
+                            "Product / Service Quality",
+                            "Customers are unhappy with **quality**. Review your product or service standards and consider quality checks."
+                        ),
+                        (
+                            ["price", "expensive", "costly", "overpriced", "worth", "money", "cheap", "cost"],
+                            "Pricing",
+                            "Pricing concerns are appearing in negative reviews. Consider reviewing your **pricing strategy** or offering better value."
+                        ),
+                        (
+                            ["dirty", "smell", "clean", "hygiene", "unhygienic", "filthy", "stink"],
+                            "Hygiene / Cleanliness",
+                            "Customers are mentioning **hygiene or cleanliness** issues. Immediate attention to cleanliness standards is advised."
+                        ),
+                        (
+                            ["wrong", "incorrect", "mistake", "error", "missing", "incomplete", "inaccurate"],
+                            "Accuracy / Order Issues",
+                            "Customers are reporting **wrong or missing items/information**. Review your order fulfilment or accuracy processes."
+                        ),
+                        (
+                            ["return", "refund", "exchange", "replace", "replacement", "warranty"],
+                            "Returns & Refunds",
+                            "Multiple mentions of **returns or refunds** in negative reviews. Simplify your return/refund policy to improve trust."
+                        ),
+                        (
+                            ["fake", "fraud", "scam", "cheat", "lie", "mislead", "false"],
+                            "Trust & Authenticity",
+                            "Serious complaints about **fraud or misleading information** detected. Urgently review authenticity and transparency."
+                        ),
+                    ]
+
+                    neg_pct = (n_neg / total) * 100
+
+                    # detect domain from top words
+                    all_words = " ".join([cleaned[i] for i in range(len(preds))])
+                    word_list = all_words.split()
+
+                    movie_keywords    = ["film", "movie", "actor", "actress", "director",
+                                         "cinema", "acting", "screenplay", "sequel", "horror",
+                                         "comedy", "thriller", "imdb", "dvd", "scene"]
+                    product_keywords  = ["product", "delivery", "order", "seller", "price",
+                                         "quality", "package", "shipping", "refund", "return",
+                                         "amazon", "flipkart", "bought", "purchase", "item",
+                                         "brand", "battery", "size", "color", "material"]
+
+                    movie_score   = sum(word_list.count(w) for w in movie_keywords)
+                    product_score = sum(word_list.count(w) for w in product_keywords)
+                    is_movie_domain = movie_score > product_score
+
+                    MOVIE_RULES = [
+                        (
+                            ["boring", "slow", "drag", "dull", "long", "tedious", "pace"],
+                            "Pacing / Story Flow",
+                            "Viewers find the **pacing slow or the story boring**. Films with tighter editing and better story flow tend to get higher ratings."
+                        ),
+                        (
+                            ["acting", "actor", "actress", "performance", "cast", "character"],
+                            "Acting & Characters",
+                            "Negative feedback about **acting or characters**. Weak performances are a top reason viewers rate films poorly."
+                        ),
+                        (
+                            ["plot", "story", "script", "writing", "screenplay", "sense", "logic"],
+                            "Plot & Writing",
+                            "Viewers are criticising the **plot or screenplay**. A weak or predictable story is a common complaint in negative reviews."
+                        ),
+                        (
+                            ["ending", "end", "finish", "conclusion", "finale"],
+                            "Ending",
+                            "The **ending** is receiving negative feedback. Unsatisfying endings significantly impact overall viewer satisfaction."
+                        ),
+                        (
+                            ["waste", "money", "ticket", "expensive", "worth", "overrated"],
+                            "Value for Money",
+                            "Viewers feel the film was **not worth watching**. Managing audience expectations through better marketing can help."
+                        ),
+                        (
+                            ["effect", "cgi", "visual", "graphic", "special"],
+                            "Visual Effects",
+                            "Complaints about **visual effects or CGI quality**. Poor visuals are increasingly noticed by modern audiences."
+                        ),
+                    ]
+
+                    # overall health score
+                    health = int((n_pos / total) * 100)
+                    if health >= 70:
+                        health_color = "#2ecc71"
+                        health_label = "Good"
+                        health_emoji = "🟢"
+                    elif health >= 50:
+                        health_color = "#f39c12"
+                        health_label = "Needs Attention"
+                        health_emoji = "🟡"
+                    else:
+                        health_color = "#e74c3c"
+                        health_label = "Critical"
+                        health_emoji = "🔴"
+
+                    st.markdown(
+                        f"<div style='background:{health_color}22; border-left:5px solid {health_color}; "
+                        f"padding:1rem 1.5rem; border-radius:10px; margin-bottom:1rem;'>"
+                        f"<b style='font-size:1.2rem;'>{health_emoji} Customer Satisfaction Score: {health}/100 — {health_label}</b><br>"
+                        f"<span style='color:#555;'>{n_pos:,} positive out of {total:,} total reviews</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+                    # keyword-based recommendations
+                    active_rules = MOVIE_RULES if is_movie_domain else RULES
+                    domain_label = "Movie / Entertainment Reviews" if is_movie_domain else "Product / Service Reviews"
+                    st.caption(f"Detected domain: **{domain_label}**")
+
+                    matched = []
+                    for keywords, category, advice in active_rules:
+                        if any(w in top_neg_words for w in keywords):
+                            matched.append((category, advice))
+
+                    if matched:
+                        for category, advice in matched:
+                            st.markdown(
+                                f"<div style='background:#fff8e1; border-left:4px solid #f39c12; "
+                                f"padding:0.8rem 1.2rem; border-radius:8px; margin-bottom:0.6rem;'>"
+                                f"<b>⚠️ {category}</b><br>{advice}"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                    elif neg_pct > 30:
+                        st.markdown(
+                            "<div style='background:#fff8e1; border-left:4px solid #f39c12; "
+                            "padding:0.8rem 1.2rem; border-radius:8px;'>"
+                            "<b>⚠️ General</b><br>A significant portion of reviews are negative. "
+                            "Review customer feedback carefully and identify areas of improvement."
+                            "</div>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.success("✅ No major issues detected. Keep maintaining your current standards!")
+                    # ── full results table ─────────────────────────────────────
+                    st.markdown("#### Full Results")
+
+                    def highlight_csv(row):
+                        color = "#d4edda" if row["Sentiment"] == "positive" else "#f8d7da"
+                        return [f"background-color: {color}"] * len(row)
+
+                    display_df = udf.head(1000)
+                    if len(udf) > 1000:
+                        st.caption(f"Showing first 1,000 of {len(udf):,} rows. Download CSV below for all results.")
+                    st.dataframe(
+                        display_df.style.apply(highlight_csv, axis=1),
+                        use_container_width=True, height=350
+                    )
+
+                    # ── download button ────────────────────────────────────────
+                    csv_out = udf.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=csv_out,
+                        file_name="sentiment_results.csv",
+                        mime="text/csv"
+                    )
+
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
 
 # ── footer ─────────────────────────────────────────────────────────────────────
 st.markdown("---")
